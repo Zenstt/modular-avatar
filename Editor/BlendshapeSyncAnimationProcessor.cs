@@ -26,11 +26,13 @@ namespace nadena.dev.modular_avatar.core.editor
             private const string PREFIX = "blendShape.";
             public string path;
             public string propertyName;
+            public bool reversed;
 
-            public SummaryBinding(string path, string blendShape)
+            public SummaryBinding(string path, string blendShape, bool reversed)
             {
                 this.path = path;
                 this.propertyName = PREFIX + blendShape;
+                this.reversed = reversed;
             }
 
             public static SummaryBinding FromEditorBinding(EditorCurveBinding binding)
@@ -40,7 +42,7 @@ namespace nadena.dev.modular_avatar.core.editor
                     return new SummaryBinding();
                 }
 
-                return new SummaryBinding(binding.path, binding.propertyName.Substring(PREFIX.Length));
+                return new SummaryBinding(binding.path, binding.propertyName.Substring(PREFIX.Length), false);
             }
         }
 
@@ -107,7 +109,7 @@ namespace nadena.dev.modular_avatar.core.editor
 
                 var refPath = RuntimeUtil.RelativePath(avatarGameObject, refObj);
 
-                var srcBinding = new SummaryBinding(refPath, binding.Blendshape);
+                var srcBinding = new SummaryBinding(refPath, binding.Blendshape, false);
 
                 if (!_bindingMappings.TryGetValue(srcBinding, out var dstBindings))
                 {
@@ -119,7 +121,7 @@ namespace nadena.dev.modular_avatar.core.editor
                     ? binding.Blendshape
                     : binding.LocalBlendshape;
 
-                dstBindings.Add(new SummaryBinding(targetObj, targetBlendshapeName));
+                dstBindings.Add(new SummaryBinding(targetObj, targetBlendshapeName, binding.reversed));
             }
         }
 
@@ -144,11 +146,15 @@ namespace nadena.dev.modular_avatar.core.editor
 
                     for (int i = 0; i < children.Length; i++)
                     {
+                        Debug.Log($"[PI] Processing child {i} of {children.Length} with name {children[i].motion.name}");
                         var newM = TransformMotion(children[i].motion);
                         if (newM != children[i].motion)
                         {
+                            Debug.Log($"[PI] Replacing motion {children[i].motion.name} with {newM.name}");
                             anyChanged = true;
                             children[i].motion = newM;
+                        } else {
+                            Debug.Log($"[PI] No change for motion {children[i].motion.name}");
                         }
                     }
 
@@ -192,8 +198,27 @@ namespace nadena.dev.modular_avatar.core.editor
 
                 foreach (var dst in dstBindings)
                 {
-                    clip.SetCurve(dst.path, typeof(SkinnedMeshRenderer), dst.propertyName,
-                        AnimationUtility.GetEditorCurve(origClip, binding));
+                    // clip.SetCurve(dst.path, typeof(SkinnedMeshRenderer), dst.propertyName,
+                    //    AnimationUtility.GetEditorCurve(origClip, binding));
+
+
+                    var curve = AnimationUtility.GetEditorCurve(origClip, binding);
+                    // If the binding is reversed, reverse the curve
+                    if (dst.reversed)
+                    {
+                        Keyframe[] newKeys = new Keyframe[curve.keys.Length];
+                        for (int i = 0; i < curve.keys.Length; i++)
+                        {
+                            var key = curve.keys[i];
+                            key.value = 100 - key.value; // Reverse the value
+                            newKeys[i] = key;
+                        }
+                        curve = new AnimationCurve(newKeys);
+                    } 
+
+                    clip.SetCurve(dst.path, typeof(SkinnedMeshRenderer), dst.propertyName, curve);
+
+                    EditorCurveBinding[] newBindings = AnimationUtility.GetCurveBindings(clip);
                 }
             }
 

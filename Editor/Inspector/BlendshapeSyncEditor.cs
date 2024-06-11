@@ -68,7 +68,9 @@ namespace nadena.dev.modular_avatar.core.editor
             Rect rect,
             out Rect meshFieldRect,
             out Rect baseShapeNameRect,
-            out Rect targetShapeNameRect
+            out Rect targetShapeNameRect,
+            // Checkbox
+            out Rect reversed
         )
         {
             if (elementWidth > 1 && elementWidth < rect.width)
@@ -77,28 +79,40 @@ namespace nadena.dev.modular_avatar.core.editor
                 rect.width = elementWidth;
             }
 
+            var reversedWidth = 55;
+
             meshFieldRect = rect;
             meshFieldRect.width /= 3;
+            meshFieldRect.width -= reversedWidth / 3; // Reduce width to accommodate reversed rectangle
 
             baseShapeNameRect = rect;
             baseShapeNameRect.width /= 3;
+            baseShapeNameRect.width -= reversedWidth / 3; // Reduce width to accommodate reversed rectangle
             baseShapeNameRect.x = meshFieldRect.x + meshFieldRect.width;
 
             targetShapeNameRect = rect;
             targetShapeNameRect.width /= 3;
+            targetShapeNameRect.width -= reversedWidth / 3; // Reduce width to accommodate reversed rectangle
             targetShapeNameRect.x = baseShapeNameRect.x + baseShapeNameRect.width;
 
             meshFieldRect.width -= 12;
             baseShapeNameRect.width -= 12;
+            targetShapeNameRect.width -= 12;
+
+            reversed = rect;
+            reversed.width = reversedWidth;
+            reversed.x = targetShapeNameRect.x + targetShapeNameRect.width;
         }
 
         private void DrawHeader(Rect rect)
         {
-            ComputeRects(rect, out var meshFieldRect, out var baseShapeNameRect, out var targetShapeNameRect);
+            ComputeRects(rect, out var meshFieldRect, out var baseShapeNameRect, out var targetShapeNameRect,
+                out var reversed);
 
             EditorGUI.LabelField(meshFieldRect, G("blendshape.mesh"));
             EditorGUI.LabelField(baseShapeNameRect, G("blendshape.source"));
             EditorGUI.LabelField(targetShapeNameRect, G("blendshape.target"));
+            EditorGUI.LabelField(reversed, "Reversed");
         }
 
         private void DrawElement(Rect rect, int index, bool isactive, bool isfocused)
@@ -112,12 +126,13 @@ namespace nadena.dev.modular_avatar.core.editor
                 Repaint();
             }
 
-            ComputeRects(rect, out var meshFieldRect, out var baseShapeNameRect, out var targetShapeNameRect);
+            ComputeRects(rect, out var meshFieldRect, out var baseShapeNameRect, out var targetShapeNameRect, out var reversed);
 
             var item = _bindings.GetArrayElementAtIndex(index);
             var mesh = item.FindPropertyRelative(nameof(BlendshapeBinding.ReferenceMesh));
             var sourceBlendshape = item.FindPropertyRelative(nameof(BlendshapeBinding.Blendshape));
             var localBlendshape = item.FindPropertyRelative(nameof(BlendshapeBinding.LocalBlendshape));
+            var reversedState = item.FindPropertyRelative(nameof(BlendshapeBinding.reversed));
 
             using (var scope = new ZeroIndentScope())
             {
@@ -145,6 +160,10 @@ namespace nadena.dev.modular_avatar.core.editor
                 DrawBlendshapePopup(sourceMesh, baseShapeNameRect, sourceBlendshape);
 
                 DrawBlendshapePopup(localMesh, targetShapeNameRect, localBlendshape, sourceBlendshape.stringValue);
+                
+                // 
+                reversed.x+= 25;
+                EditorGUI.PropertyField(reversed, reversedState, GUIContent.none);
             }
         }
 
