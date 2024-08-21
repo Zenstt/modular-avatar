@@ -109,6 +109,13 @@ namespace nadena.dev.modular_avatar.core.editor
             }
 #endif
 
+#if MA_VRCSDK3_AVATARS_3_7_0_OR_NEWER
+            foreach (var c in avatarGameObject.transform.GetComponentsInChildren<VRCConstraintBase>(true))
+            {
+                RetainBoneReferences(c);
+            }
+#endif // MA_VRCSDK3_AVATARS_3_7_0_OR_NEWER
+
             foreach (var c in avatarGameObject.transform.GetComponentsInChildren<IConstraint>(true))
             {
                 RetainBoneReferences(c as Component);
