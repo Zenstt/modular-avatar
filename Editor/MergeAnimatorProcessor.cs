@@ -150,7 +150,9 @@ namespace nadena.dev.modular_avatar.core.editor
                 basePath = "";
             }
 
-            bool? writeDefaults = merge.matchAvatarWriteDefaults ? writeDefaults_[merge.layerType] : null;
+            var writeDefaults = merge.matchAvatarWriteDefaults
+                ? writeDefaults_.GetValueOrDefault(merge.layerType)
+                : null;
             var controller = _context.ConvertAnimatorController(merge.animator);
             session.AddController(basePath, controller, writeDefaults);
 
@@ -234,8 +236,10 @@ namespace nadena.dev.modular_avatar.core.editor
             }
         }
 
-        private bool? ProbeWriteDefaults(AnimatorController controller)
+        internal static bool? ProbeWriteDefaults(AnimatorController controller)
         {
+            if (controller == null) return null;
+            
             bool hasWDOn = false;
             bool hasWDOff = false;
 

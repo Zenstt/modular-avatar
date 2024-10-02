@@ -115,7 +115,8 @@ namespace nadena.dev.modular_avatar.core.editor
                     }
                 }
                 
-                    
+                ResolvedParameter.saved |= info.ResolvedParameter.saved;
+                ResolvedParameter.localOnly &= info.ResolvedParameter.localOnly;
             }
 
             public void MergeChild(ParameterInfo info)
@@ -128,8 +129,6 @@ namespace nadena.dev.modular_avatar.core.editor
                     ResolvedParameter.hasExplicitDefaultValue = info.ResolvedParameter.hasExplicitDefaultValue;
                     ResolvedParameter.m_overrideAnimatorDefaults = info.ResolvedParameter.m_overrideAnimatorDefaults;
                 }
-
-                ResolvedParameter.saved = info.ResolvedParameter.saved;
             }
             
             void MergeCommon(ParameterInfo info)
@@ -154,8 +153,6 @@ namespace nadena.dev.modular_avatar.core.editor
                 ConflictingValues = ConflictingValues.Union(info.ConflictingValues);
                 ConflictingSyncTypes = ConflictingSyncTypes.Union(info.ConflictingSyncTypes);
                 
-                ResolvedParameter.saved = ResolvedParameter.saved || info.ResolvedParameter.saved;
-                
                 encounterOrder = Math.Min(encounterOrder, info.encounterOrder);
             }
         }
@@ -173,6 +170,10 @@ namespace nadena.dev.modular_avatar.core.editor
                         p.Value.ResolvedParameter.HasDefaultValue &&
                         p.Value.ResolvedParameter.OverrideAnimatorDefaults)
                     .ToImmutableDictionary(p => p.Key, p => p.Value.ResolvedParameter.defaultValue);
+
+            // clean up all parameters objects before the ParameterAssignerPass runs
+            foreach (var p in avatar.GetComponentsInChildren<ModularAvatarParameters>())
+                UnityObject.DestroyImmediate(p);
         }
 
         private void SetExpressionParameters(GameObject avatarRoot, ImmutableDictionary<string, ParameterInfo> allParams)
@@ -305,7 +306,7 @@ namespace nadena.dev.modular_avatar.core.editor
             newParameter.defaultValue = info.ResolvedParameter.HasDefaultValue ? info.ResolvedParameter.defaultValue : parameter.defaultValue;
             newParameter.name = parameter.name;
             newParameter.valueType = parameter.valueType;
-            newParameter.networkSynced = parameter.networkSynced;
+            newParameter.networkSynced = parameter.networkSynced || !info.ResolvedParameter.localOnly;
             newParameter.saved = parameter.saved || info.ResolvedParameter.saved;
             
             return newParameter;
@@ -370,23 +371,26 @@ namespace nadena.dev.modular_avatar.core.editor
                                 merger.animator = _context.ConvertAnimatorController(overrideController);
                             }
 
-                            var controller = merger.animator as AnimatorController;
-                            if (controller != null)
+                            var mappings = paramInfo.GetParameterRemappingsAt(obj);
+                            var remap = mappings.SelectMany(item =>
                             {
-                                var mappings = paramInfo.GetParameterRemappingsAt(obj);
-                                var remap = mappings.SelectMany(item =>
-                                {
-                                    if (item.Key.Item1 == ParameterNamespace.Animator) return new[] { item };
+                                if (item.Key.Item1 == ParameterNamespace.Animator) return new[] { item };
 
-                                    return PhysBoneSuffixes.Select(suffix =>
-                                        new KeyValuePair<(ParameterNamespace, string), ParameterMapping>(
-                                            (ParameterNamespace.Animator, item.Key.Item2 + suffix),
-                                            new ParameterMapping(item.Value.ParameterName + suffix, item.Value.IsHidden)
-                                        )
-                                    );
-                                }).ToImmutableDictionary();
-                                ProcessAnimator(ref controller, remap);
-                                merger.animator = controller;
+                                return PhysBoneSuffixes.Select(suffix =>
+                                    new KeyValuePair<(ParameterNamespace, string), ParameterMapping>(
+                                        (ParameterNamespace.Animator, item.Key.Item2 + suffix),
+                                        new ParameterMapping(item.Value.ParameterName + suffix, item.Value.IsHidden)
+                                    )
+                                );
+                            }).ToImmutableDictionary();
+
+                            if (merger.animator != null)
+                            {
+                                Profiler.BeginSample("DeepCloneAnimator");
+                                merger.animator = new DeepClone(_context.PluginBuildContext).DoClone(merger.animator);
+                                Profiler.EndSample();
+
+                                ProcessRuntimeAnimatorController(merger.animator, remap);
                             }
 
                             break;
@@ -478,6 +482,28 @@ namespace nadena.dev.modular_avatar.core.editor
             return rv;
         }
 
+        private void ProcessRuntimeAnimatorController(RuntimeAnimatorController controller,
+            ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remap)
+        {
+            if (controller is AnimatorController ac)
+            {
+                ProcessAnimator(ac, remap);
+            }
+            else if (controller is AnimatorOverrideController aoc)
+            {
+                var list = new List<KeyValuePair<AnimationClip, AnimationClip>>();
+                aoc.GetOverrides(list);
+
+                for (var i = 0; i < list.Count; i++)
+                {
+                    var kvp = list[i];
+                    if (kvp.Value != null) ProcessClip(kvp.Value, remap);
+                }
+
+                ProcessRuntimeAnimatorController(aoc.runtimeAnimatorController, remap);
+            }
+        }
+
         private void ProcessMenuInstaller(ModularAvatarMenuInstaller installer,
             ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remaps)
         {
@@ -496,20 +522,14 @@ namespace nadena.dev.modular_avatar.core.editor
             });
         }
 
-        private void ProcessAnimator(ref AnimatorController controller, ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remaps)
+        private void ProcessAnimator(AnimatorController controller,
+            ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remaps)
         {
             if (remaps.IsEmpty) return;
             
             var visited = new HashSet<AnimatorStateMachine>();
             var queue = new Queue<AnimatorStateMachine>();
 
-            // Deep clone the animator
-            if (!_context.PluginBuildContext.IsTemporaryAsset(controller))
-            {
-                Profiler.BeginSample("DeepCloneAnimator");
-                controller = _context.DeepCloneAnimator(controller);
-                Profiler.EndSample();
-            }
 
             var parameters = controller.parameters;
             for (int i = 0; i < parameters.Length; i++)
@@ -594,9 +614,53 @@ namespace nadena.dev.modular_avatar.core.editor
                 }
             }
 
-            if (state.motion is BlendTree blendTree)
+            ProcessMotion(state.motion, remaps);
+        }
+
+        private void ProcessMotion(Motion motion,
+            ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remaps)
+        {
+            if (motion is BlendTree blendTree) ProcessBlendtree(blendTree, remaps);
+
+            if (motion is AnimationClip clip) ProcessClip(clip, remaps);
+        }
+
+        private void ProcessClip(AnimationClip clip,
+            ImmutableDictionary<(ParameterNamespace, string), ParameterMapping> remaps)
+        {
+            var curveBindings = AnimationUtility.GetCurveBindings(clip);
+
+            var bindingsToUpdate = new List<EditorCurveBinding>();
+            var newCurves = new List<AnimationCurve>();
+
+            foreach (var binding in curveBindings)
             {
-                ProcessBlendtree(blendTree, remaps);
+                if (binding.path != "" || binding.type != typeof(Animator)) continue;
+                if (remaps.TryGetValue((ParameterNamespace.Animator, binding.propertyName), out var newBinding))
+                {
+                    var curCurve = AnimationUtility.GetEditorCurve(clip, binding);
+
+                    bindingsToUpdate.Add(binding);
+                    newCurves.Add(null);
+
+                    bindingsToUpdate.Add(new EditorCurveBinding
+                    {
+                        path = "",
+                        type = typeof(Animator),
+                        propertyName = newBinding.ParameterName
+                    });
+                    newCurves.Add(curCurve);
+                }
+            }
+
+            if (bindingsToUpdate.Any())
+            {
+                AnimationUtility.SetEditorCurves(clip, bindingsToUpdate.ToArray(), newCurves.ToArray());
+
+                // Workaround apparent unity bug where the clip's curves are not deleted
+                for (var i = 0; i < bindingsToUpdate.Count; i++)
+                    if (newCurves[i] == null && AnimationUtility.GetEditorCurve(clip, bindingsToUpdate[i]) != null)
+                        AnimationUtility.SetEditorCurve(clip, bindingsToUpdate[i], newCurves[i]);
             }
         }
 
@@ -609,10 +673,7 @@ namespace nadena.dev.modular_avatar.core.editor
             for (int i = 0; i < children.Length; i++)
             {
                 var childMotion = children[i];
-                if (childMotion.motion is BlendTree subTree)
-                {
-                    ProcessBlendtree(subTree, remaps);
-                }
+                ProcessMotion(childMotion.motion, remaps);
 
                 childMotion.directBlendParameter = remap(remaps, childMotion.directBlendParameter);
                 children[i] = childMotion;
