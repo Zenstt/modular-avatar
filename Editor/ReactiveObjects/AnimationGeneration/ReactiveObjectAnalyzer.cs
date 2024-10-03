@@ -144,7 +144,7 @@ namespace nadena.dev.modular_avatar.core.editor
             HashSet<GameObject> toggledObjects = new();
 
             if (asc == null) return;
-
+            
             foreach (var targetProp in shapes.Keys)
                 if (targetProp is { TargetObject: GameObject go, PropertyName: "m_IsActive" })
                     toggledObjects.Add(go);
@@ -287,7 +287,7 @@ namespace nadena.dev.modular_avatar.core.editor
                 }
                 
                 var deletions = info.actionGroups.Where(agk => agk.IsDelete).ToList();
-                if (deletions.Any(d => d.ControllingConditions.All(c => c.IsConstantActive)))
+                if (deletions.Any(d => d.InitiallyActive))
                 {
                     // always deleted
                     shapes.Remove(key);
